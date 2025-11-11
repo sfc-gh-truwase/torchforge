@@ -26,7 +26,7 @@ from forge.actors.replay_buffer import ReplayBuffer
 from forge.actors.trainer import RLTrainer
 from forge.controller.actor import ForgeActor
 from forge.controller.provisioner import init_provisioner, shutdown
-from forge.data.rewards import MathReward, ThinkingReward
+from forge.data.rewards import MathReward, ThinkingReward, VerlMathReward
 from forge.data_models.completion import Completion
 from forge.observability.metric_actors import get_or_create_metric_logger
 from forge.observability.metrics import record_metric, Reduce
@@ -39,6 +39,7 @@ from monarch.actor import endpoint
 from omegaconf import DictConfig
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
+USE_VERL = True 
 
 @dataclass
 class Episode:
@@ -213,6 +214,54 @@ class DatasetActor(ForgeActor):
     def setup(self):
         self._tokenizer = get_tokenizer(self.model)
         self._epoch = 0
+        self._transform_count = 0 
+
+        def extract_verl_solution(solution_str):
+            import re
+            solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
+            assert solution is not None
+            final_solution = solution.group(0)
+            final_solution = final_solution.split("#### ")[1].replace(",", "")
+            return final_solution
+
+        def verl_gsm8k_transform(sample):
+            instruction_following = 'Let\'s think step by step and output the final answer after "####".'
+
+            def _native_chat(request):
+                as_chat = [
+                    {"role": "system", "content": instruction_following},
+                    {"role": "user", "content": request},
+                ]
+                return as_chat
+
+            def _verl_chat(request):
+                request = request + " " + instruction_following
+                as_chat = [
+                    {
+                        "role": "user", 
+                        "content": request
+                    },
+                ]
+                return as_chat 
+
+            request: str = sample["question"]
+            # as_chat = _native_chat(request)
+            as_chat = _verl_chat(request)
+
+            formatted_request = self._tokenizer.apply_chat_template(
+                as_chat,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            target: str = sample["answer"]
+            formatted_target = extract_verl_solution(target)
+            data= {"request": formatted_request, "target": formatted_target}
+            
+            # if self._transform_count < 4:
+            #     print(f'{data=}')
+            self._transform_count += 1 
+
+            return data 
 
         def gsm8k_transform(sample):
             system_prompt = """
@@ -231,12 +280,17 @@ class DatasetActor(ForgeActor):
             )
             target: str = sample["answer"]
             formatted_target = target.split("#### ")[1]
-            return {"request": formatted_request, "target": formatted_target}
+            data= {"request": formatted_request, "target": formatted_target}
+            # if self._transform_count < 4:
+            #     print(f'{data=}')
+            self._transform_count += 1 
+            return data 
 
         self._base_dataset = load_dataset(
             self.path, self.revision, split=self.data_split, streaming=self.streaming
         )
-        self._base_dataset = self._base_dataset.map(gsm8k_transform)
+        # self._base_dataset = self._base_dataset.map(gsm8k_transform)
+        self._base_dataset = self._base_dataset.map(verl_gsm8k_transform if USE_VERL else gsm8k_transform)
         # self._base_dataset = self._base_dataset.shuffle()
         self._iterator = iter(self._base_dataset)
 
@@ -291,6 +345,7 @@ async def main(cfg: DictConfig):
     group_size = cfg.group_size
     max_req_tokens = cfg.max_req_tokens
     max_res_tokens = cfg.max_res_tokens
+    batch_size = cfg.local_batch_size * cfg.trainer.parallelism.data_parallel_shard_degree
 
     # ---- Global setups ---- #
     provisioner = None
@@ -309,7 +364,7 @@ async def main(cfg: DictConfig):
     # reward_functions = [MathReward(), ThinkingReward()]
     print(f"{cfg.policy=}")
     print(f"{cfg.trainer=}")
-    reward_functions = [MathReward()]
+    reward_functions = [VerlMathReward() if USE_VERL else MathReward(partial_credit=0.0)]
     (
         dataloader,
         policy,
@@ -338,7 +393,7 @@ async def main(cfg: DictConfig):
     max_steps = cfg.trainer.training.steps or -1
 
     print("All services initialized successfully!")
-    shutdown_event = asyncio.Event()
+
     # Here we spawn a torchstore storage volume per trainer process.
     # We initialize after service initialization because torchstore currently
     # requires access to the underlying proc meshes in the local rank strategy.
@@ -354,72 +409,69 @@ async def main(cfg: DictConfig):
     print("Torchstore successfully initialized with local rank strategy")
 
     # ---- Core RL loops ---- #
-    async def continuous_rollouts():
-        rollout_count = 0
+    async def generate_episode():
         pad_id = await dataloader.pad_token.call_one()
-        while not shutdown_event.is_set():
-            t = Tracer("main_perf/continuous_rollouts")
-            t.start()
-            sample = await dataloader.sample.call_one()
-            if sample is None:
-                print("Dataloader is empty, exiting continuous rollout")
-                return
+        t = Tracer("main_perf/continuous_rollouts")
+        t.start()
+        sample = await dataloader.sample.call_one()
+        if sample is None:
+            print("Dataloader is empty, exiting continuous rollout")
+            return
 
-            t.step("data_loading")
+        t.step("data_loading")
 
-            prompt, target = sample["request"], sample["target"]
-            responses: list[Completion] = await policy.generate.route(prompt)
-            t.step("policy_generation")
+        prompt, target = sample["request"], sample["target"]
+        responses: list[Completion] = await policy.generate.route(prompt)
+        # print(f'{responses=}')
+        t.step("policy_generation")
 
-            # Construct episodes and calculate rewards
-            episodes = []
-            input_ids = torch.ones(
-                (group_size, max_req_tokens + max_res_tokens),
-                dtype=torch.long,
+        # Construct episodes and calculate rewards
+        episodes = []
+        input_ids = torch.ones(
+            (group_size, max_req_tokens + max_res_tokens),
+            dtype=torch.long,
+        )
+        for i, response in enumerate(responses):
+            episode = Episode(
+                episode_id=str(uuid.uuid4()),
+                pad_id=pad_id,
+                request_len=max_req_tokens,
+                response_len=max_res_tokens,
+                target=target,
+                completion=response,
             )
-            for i, response in enumerate(responses):
-                episode = Episode(
-                    episode_id=str(uuid.uuid4()),
-                    pad_id=pad_id,
-                    request_len=max_req_tokens,
-                    response_len=max_res_tokens,
-                    target=target,
-                    completion=response,
-                )
-                episode.reward = await reward_actor.evaluate_response.route(
-                    prompt=prompt, response=response.text, target=target
-                )
-                episodes.append(episode)
-
-                # Build input_ids for reference logprobs
-                input_ids[i, :max_req_tokens] = episode.request_tensor
-                input_ids[i, max_req_tokens:] = episode.response_tensor
-
-            t.step("reward_evaluation")
-
-            ref_logprobs = await ref_model.forward.route(
-                input_ids, max_req_tokens, return_logprobs=True
+            episode.reward = await reward_actor.evaluate_response.route(
+                prompt=prompt, response=response.text, target=target
             )
-            t.step("reference_model_calculate_logprobs")
+            episodes.append(episode)
 
-            for i, episode in enumerate(episodes):
-                episode.ref_logprobs = ref_logprobs[i]
-            del ref_logprobs, input_ids
+            # Build input_ids for reference logprobs
+            input_ids[i, :max_req_tokens] = episode.request_tensor
+            input_ids[i, max_req_tokens:] = episode.response_tensor
 
-            advantages = await compute_advantages.compute.call_one(episodes)
-            for episode, advantage in zip(episodes, advantages):
-                episode.advantage = advantage
-                await replay_buffer.add.call_one(episode)
+        t.step("reward_evaluation")
 
-            rollout_count += 1
-            record_metric(
-                "main/continuous_rollouts/count_rollout_iterations", 1, Reduce.SUM
-            )
-            t.stop()
+        ref_logprobs = await ref_model.forward.route(
+            input_ids, max_req_tokens, return_logprobs=True
+        )
+        t.step("reference_model_calculate_logprobs")
+
+        for i, episode in enumerate(episodes):
+            episode.ref_logprobs = ref_logprobs[i]
+        del ref_logprobs, input_ids
+
+        advantages = await compute_advantages.compute.call_one(episodes)
+        for episode, advantage in zip(episodes, advantages):
+            episode.advantage = advantage
+            await replay_buffer.add.call_one(episode)
+
+
+        t.stop()
 
     async def continuous_training():
         training_step = 0
         restart_tracer = True  # Flag to control when to restart tracer
+        rollout_count = 0
 
         while max_steps == -1 or training_step < max_steps:
             # Restart tracer when needed (initial start or after completing a training step)
@@ -429,47 +481,52 @@ async def main(cfg: DictConfig):
                 t.start()
                 restart_tracer = False
 
+            for _ in range(batch_size):
+                await generate_episode(
+                    # dataloader, policy, reference_model,
+                    # reward, replay_buffer
+                )
+
+                rollout_count += 1
+                record_metric("main/continuous_rollouts/count_rollout_iterations", 1, Reduce.SUM)     
+
             batch = await replay_buffer.sample.call_one(
                 curr_policy_version=training_step
             )
-            if batch is None:
-                await asyncio.sleep(0.1)
-            else:
-                t.step("waiting_for_buffer")
 
-                inputs, targets = batch
-                await trainer.train_step.call(inputs, targets)
-                training_step += 1
-                t.step("train_step")
+            t.step("waiting_for_buffer")
 
-                await trainer.push_weights.call(training_step)
-                t.step("push_weights")
+            inputs, targets = batch
+            await trainer.train_step.call(inputs, targets)
+            training_step += 1
+            t.step("train_step")
 
-                await policy.update_weights.fanout(training_step)
-                t.step("update_weights")
+            await trainer.push_weights.call(training_step)
+            t.step("push_weights")
 
-                if training_step >= 2:
-                    await drop_weights(training_step - 1)
-                    t.step("drop_weights")
+            await policy.update_weights.fanout(training_step)
+            t.step("update_weights")
+
+            if training_step >= 2:
+                await drop_weights(training_step - 1)
+                t.step("drop_weights")
 
                 t.stop()
                 restart_tracer = True
 
-                # Flush metrics every training step to WandB
-                await mlogger.flush.call_one(training_step)
+            # Flush metrics every training step to WandB
+            await mlogger.flush.call_one(training_step)
 
         print(
             f"Reached training limit ({max_steps} steps). Exiting continuous_training loop."
         )
 
-    num_rollout_threads = cfg.get("rollout_threads", 1)
+    num_rollout_threads = 1
     num_training_threads = cfg.get("training_threads", 1)
     print(
-        f"Starting GRPO with {num_rollout_threads} rollout threads, {num_training_threads} training threads"
+        f"Starting SyncGRPO with {num_rollout_threads} rollout threads, {num_training_threads} training threads"
     )
-    rollout_tasks = [
-        asyncio.create_task(continuous_rollouts()) for _ in range(num_rollout_threads)
-    ]
+
     training_task = asyncio.create_task(continuous_training())
 
     try:
@@ -478,19 +535,6 @@ async def main(cfg: DictConfig):
         print("Training interrupted by user")
     finally:
         print("Shutting down... (this may take a few seconds)")
-        shutdown_event.set()
-
-        try:
-            # Give rollouts up to 5s to finish naturally
-            await asyncio.wait_for(
-                asyncio.gather(*rollout_tasks, return_exceptions=True),
-                timeout=5,
-            )
-        except asyncio.TimeoutError:
-            print("Timeout waiting for rollouts; forcing cancellation...")
-            for t in rollout_tasks:
-                t.cancel()
-            await asyncio.gather(*rollout_tasks, return_exceptions=True)
 
         training_task.cancel()
 

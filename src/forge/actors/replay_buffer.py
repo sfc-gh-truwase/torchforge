@@ -126,6 +126,9 @@ class ReplayBuffer(ForgeActor):
             for dp_idx in range(self.dp_size)
         ]
 
+        record_metric("buffer/sample/total_samples", total_samples, Reduce.SUM)
+        record_metric("buffer/sample/sampled_episodes", len(sampled_episodes), Reduce.SUM)
+
         # Call the underlying collate function to collate the episodes into a batch
         return self.collate(reshaped_episodes)
 

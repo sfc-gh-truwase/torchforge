@@ -92,7 +92,7 @@ class RLTrainer(ForgeActor):
     loss: Callable = lambda logits, **targets: logits
     state_dict_key: str = "model_state_dict"
     use_dcp: bool = not rdma_available()
-    dcp_path: str = "forge_dcp_tmp"
+    dcp_path: str = "/data-fast/forge_dcp_tmp"
 
     def __post_init__(self):
         super().__init__()
@@ -126,6 +126,7 @@ class RLTrainer(ForgeActor):
             "dcp_path",
         }:
             engine_config.pop(key)  # Not part of job config
+        logger.info(f"{engine_config=}")
         self.engine = ForgeEngine(ForgeJobConfig(**engine_config))
         self.engine.checkpointer.load(step=self.step)
         self.engine.optimizers.zero_grad()
@@ -171,7 +172,7 @@ class RLTrainer(ForgeActor):
 
         self.engine.optimizers.step()
         self.engine.optimizers.zero_grad()
-        self.engine.lr_schedulers.step()
+        # self.engine.lr_schedulers.step()
         t.step("optimizer_step")
 
         # TODO: delete item() to avoid cpu-gpu sync
@@ -200,6 +201,7 @@ class RLTrainer(ForgeActor):
         logger.info(f"Pushing weights for policy version {policy_version}")
 
         start_time = time.perf_counter()
+
         if "model" not in self.engine.checkpointer.states:
             raise RuntimeError("Model state not found in checkpointer state")
 
