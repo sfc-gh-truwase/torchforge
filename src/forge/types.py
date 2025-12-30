@@ -7,6 +7,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TypedDict, Union
+from omegaconf import DictConfig
 
 
 class Message(TypedDict):
@@ -38,6 +39,7 @@ class Observation:
 class Launcher(Enum):
     MAST = "mast"
     SLURM = "slurm"
+    SSH = "ssh"
 
 
 @dataclass
@@ -116,11 +118,23 @@ class LauncherConfig:
     gpu: int = 8  # GPUs per node (required for SLURM, can get with sinfo)
     account: str = ""
     qos: str = ""
+    ssh_hostfile: str = None
+    colocate_ref_and_trainer: bool = True  
 
     def __post_init__(self):
         if isinstance(self.launcher, str):
             self.launcher = Launcher(self.launcher)
 
+        self.services = {name: ServiceConfig(**value) for name, value in self.services.items()}
+        self.actors = {name: ProcessConfig(**value) for name, value in self.actors.items()}
+
+    @classmethod
+    def prepare_kwargs(cls, cfg: DictConfig) -> dict:
+        kwargs = {}
+        kwargs.update(**cfg.provisioner)
+        kwargs["services"] = cfg.services
+        kwargs["actors"] = cfg.actors
+        return kwargs
 
 @dataclass
 class ProvisionerConfig:

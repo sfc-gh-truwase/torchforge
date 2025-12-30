@@ -96,8 +96,10 @@ async def main(cfg: DictConfig):
     # ---- Global setups ---- #
     provisioner = None
     if cfg.get("provisioner", None) is not None:
+        cfg_kwargs = LauncherConfig.prepare_kwargs(cfg)
+        launcher_config = LauncherConfig(**cfg_kwargs)
         provisioner = await init_provisioner(
-            ProvisionerConfig(launcher_config=LauncherConfig(**cfg.provisioner))
+            ProvisionerConfig(launcher_config=launcher_config)
         )
     else:
         provisioner = await init_provisioner()

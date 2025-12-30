@@ -4,25 +4,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Launcher specific logic (i.e. SLURM, k8s when supported, etc.)"""
+"""Slurm Launcher"""
 
+import os
+import sys 
 import tempfile
 from typing import Any
 
 import monarch
-from forge.controller.base import BaseLauncher
-from forge.types import Launcher, LauncherConfig
+
+from forge.types import LauncherConfig
+from forge.controller.launchers.base_launcher import BaseLauncher
+
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.allocator import RemoteAllocator, TorchXRemoteAllocInitializer
 from monarch.actor import ProcMesh
 from monarch.tools import commands
-from monarch.tools.components import hyperactor
 from monarch.tools.config import Config
-
-
-JOB_NAME_KEY = "job_name"
-LAUNCHER_KEY = "launcher"
 
 
 class Slurmlauncher(BaseLauncher):
@@ -73,20 +72,3 @@ class Slurmlauncher(BaseLauncher):
 
     async def remote_setup(self, procs: ProcMesh) -> None:
         return
-
-
-def get_launcher(cfg: LauncherConfig | None = None) -> BaseLauncher | None:
-    if not cfg:
-        return None
-    if cfg.launcher == Launcher.SLURM:
-        return Slurmlauncher(cfg)
-    elif cfg.launcher == Launcher.MAST:
-        try:
-            from forge.fb.mast_launcher import MastLauncher
-
-            return MastLauncher(cfg, detached=False)
-        except ImportError as err:
-            raise ValueError("MAST is not available, cannot launch MAST jobs.") from err
-
-    else:
-        raise ValueError(f"Unsupported config provided, got {cfg}")
