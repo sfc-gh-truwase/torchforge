@@ -6,15 +6,14 @@
 
 """Slurm Launcher"""
 
-import os
-import sys 
+
 import tempfile
 from typing import Any
 
 import monarch
+from forge.controller.launchers.base_launcher import BaseLauncher
 
 from forge.types import LauncherConfig
-from forge.controller.launchers.base_launcher import BaseLauncher
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure

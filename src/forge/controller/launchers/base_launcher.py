@@ -7,8 +7,8 @@
 """Base Launcher class"""
 
 from typing import Any
-import monarch
-from monarch.actor import ProcMesh, HostMesh
+
+from monarch.actor import HostMesh, ProcMesh
 
 
 class BaseLauncher:
@@ -37,8 +37,7 @@ class BaseLauncher:
             allocator=alloc,
             alloc_constraints=alloc_constraints,
         )
-        return host_mesh, server_name        
+        return host_mesh, server_name
 
     async def remote_setup(self, procs: ProcMesh) -> None:
         pass
-

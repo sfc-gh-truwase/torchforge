@@ -6,16 +6,16 @@
 
 """Launcher Factory"""
 
-import os
-from typing import Any
 
 from forge.types import Launcher, LauncherConfig
+
 from .base_launcher import BaseLauncher
 from .slurm_launcher import Slurmlauncher
 from .ssh_launcher import SSHLauncher
 
 JOB_NAME_KEY = "job_name"
 LAUNCHER_KEY = "launcher"
+
 
 def get_launcher(cfg: LauncherConfig | None = None) -> BaseLauncher | None:
     if not cfg:

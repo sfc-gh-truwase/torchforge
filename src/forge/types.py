@@ -7,6 +7,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TypedDict, Union
+
 from omegaconf import DictConfig
 
 
@@ -119,14 +120,18 @@ class LauncherConfig:
     account: str = ""
     qos: str = ""
     ssh_hostfile: str = None
-    colocate_ref_and_trainer: bool = True  
+    colocate_ref_and_trainer: bool = True
 
     def __post_init__(self):
         if isinstance(self.launcher, str):
             self.launcher = Launcher(self.launcher)
 
-        self.services = {name: ServiceConfig(**value) for name, value in self.services.items()}
-        self.actors = {name: ProcessConfig(**value) for name, value in self.actors.items()}
+        self.services = {
+            name: ServiceConfig(**value) for name, value in self.services.items()
+        }
+        self.actors = {
+            name: ProcessConfig(**value) for name, value in self.actors.items()
+        }
 
     @classmethod
     def prepare_kwargs(cls, cfg: DictConfig) -> dict:
@@ -135,6 +140,7 @@ class LauncherConfig:
         kwargs["services"] = cfg.services
         kwargs["actors"] = cfg.actors
         return kwargs
+
 
 @dataclass
 class ProvisionerConfig:
