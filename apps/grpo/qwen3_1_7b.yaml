@@ -10,19 +10,12 @@ model: "Qwen/Qwen3-1.7B"
 off_by_n: 1 # Off by one by default
 compile: true # Enable torch.compile for trainer/ref_model, and CUDA graphs for vLLM
 
-# Main loop configuration
-rollout_threads: ${services.policy.num_replicas}   # Recommended to set equal to policy.num_replicas
-
-provisioner:
-  launcher: ssh
-  ssh_hostfile: "/job/hostfile"
-
 # Observability configuration
 metric_logging:
-  # wandb:
-  #   project: grpo-training
-  #   group: grpo_exp_${oc.env:USER}
-  #   logging_mode: global_reduce # global_reduce, per_rank_reduce, per_rank_no_reduce
+  wandb:
+    project: grpo-training
+    group: grpo_exp_${oc.env:USER}
+    logging_mode: global_reduce # global_reduce, per_rank_reduce, per_rank_no_reduce
   console:
     logging_mode: global_reduce
 
@@ -70,7 +63,7 @@ trainer:
     enable: ${compile}
   parallelism:
     data_parallel_replicate_degree: 1
-    data_parallel_shard_degree: 4
+    data_parallel_shard_degree: -1
     tensor_parallel_degree: 1
     pipeline_parallel_degree: 1
     context_parallel_degree: 1
@@ -78,22 +71,21 @@ trainer:
     disable_loss_parallel: true
   checkpoint:
     enable: true
-    folder: /data-fast/torchforge/${trainer.model.flavor}
-    initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
-    initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
-    last_save_in_hf: true
-    interval: 500
-    async_mode: "disabled"
+  folder: ./checkpoint # The folder to save checkpoints to.
+  initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
+  initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
+  last_save_in_hf: true
+  interval: 500
+  async_mode: "disabled"
   activation_checkpoint:
     mode: selective
     selective_ac_option: op
-  dcp_path: /modeling-checkpoints/torchforge_dcp_tmp/${trainer.model.flavor}
 
 # Replay buffer configuration
 replay_buffer:
   batch_size: ${local_batch_size}
   max_policy_age: ${off_by_n}
-  dp_size: ${trainer.parallelism.data_parallel_shard_degree} # Must equal trainer DP degree
+  dp_size: 2
 
 # Reference model configuration
 ref_model:
@@ -123,16 +115,14 @@ ref_model:
 services:
   policy:
     procs: ${policy.engine_args.tensor_parallel_size}
-    num_replicas: 4
-    mesh_name: policy
+    num_replicas: 1
     with_gpus: true
-    hosts: 1
+    mesh_name: policy
   ref_model:
     procs: 1
-    num_replicas: 4
+    num_replicas: 1
     mesh_name: ref_model
     with_gpus: true
-    hosts: 1
   reward_actor:
     procs: 1
     num_replicas: 1
@@ -145,10 +135,9 @@ actors:
     with_gpus: false
     mesh_name: dataset
   trainer:
-    procs: 4
+    procs: 2
     with_gpus: true
     mesh_name: trainer
-    hosts: 1
   replay_buffer:
     procs: 1
     with_gpus: false

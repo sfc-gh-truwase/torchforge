@@ -161,7 +161,6 @@ class SSHLauncher(BaseLauncher):
         return job
 
     async def get_host_mesh(self, name: str, num_hosts: int) -> tuple[HostMesh, str]:
-        print(f"ssh_launcher_get_host_mesh: {name=} {num_hosts=}")
         for key in self.host_mesh_map.keys():
             if key in name:
                 host_mesh = self.host_mesh_map[key].get_host_mesh()
@@ -213,10 +212,6 @@ class SSHLauncher(BaseLauncher):
             return False, error_msg
 
         # Check that all services/actors which use gpus also specify host count
-        print(f"{cfg=}")
-        print(f"{cfg.services=}")
-        print(f"{cfg.actors=}")
-
         gpu_host_count = {
             name: service.hosts
             for name, service in cfg.services.items()
@@ -249,7 +244,5 @@ class SSHLauncher(BaseLauncher):
         if required_host_count > available_host_count:
             error_msg = f"{error_msg_prefix} {required_host_count=} exceeds {available_host_count=}"
             return False, error_msg
-
-        print(f"{required_host_count=} {available_host_count=} {gpu_host_count=}")
 
         return True, None
