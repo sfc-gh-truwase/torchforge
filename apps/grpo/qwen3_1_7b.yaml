@@ -10,6 +10,10 @@ model: "Qwen/Qwen3-1.7B"
 off_by_n: 1 # Off by one by default
 compile: true # Enable torch.compile for trainer/ref_model, and CUDA graphs for vLLM
 
+# Main loop configuration
+rollout_threads: 1   # Recommended to set equal to policy.num_replicas
+
+
 # Observability configuration
 metric_logging:
   wandb:
@@ -63,7 +67,7 @@ trainer:
     enable: ${compile}
   parallelism:
     data_parallel_replicate_degree: 1
-    data_parallel_shard_degree: -1
+    data_parallel_shard_degree: 1
     tensor_parallel_degree: 1
     pipeline_parallel_degree: 1
     context_parallel_degree: 1
@@ -71,12 +75,12 @@ trainer:
     disable_loss_parallel: true
   checkpoint:
     enable: true
-  folder: ./checkpoint # The folder to save checkpoints to.
-  initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
-  initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
-  last_save_in_hf: true
-  interval: 500
-  async_mode: "disabled"
+    folder: ./checkpoint              # The folder to save checkpoints to.
+    initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
+    initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
+    last_save_in_hf: true
+    interval: 500
+    async_mode: "disabled"
   activation_checkpoint:
     mode: selective
     selective_ac_option: op
