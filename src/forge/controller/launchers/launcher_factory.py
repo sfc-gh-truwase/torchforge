@@ -26,10 +26,6 @@ def get_launcher(cfg: LauncherConfig | None = None) -> BaseLauncher | None:
         success, error_msg = SSHLauncher.validate_configuration(cfg)
         if not success:
             raise ValueError(error_msg)
-        # if cfg.ssh_hostfile is None or not os.path.isfile(cfg.ssh_hostfile):
-        #     raise ValueError(
-        #         f"SSH Launcher cannot work because of invalid hostfile path: {cfg.ssh_hostfile}."
-        #     )
         return SSHLauncher(cfg)
     elif cfg.launcher == Launcher.MAST:
         try:
