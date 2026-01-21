@@ -8,19 +8,15 @@
 
 import asyncio
 import logging
-
 import os
 import socket
 import uuid
 
 import torch
-
 from forge.controller.launchers import BaseLauncher, get_launcher
 from forge.env import all_env_vars, FORGE_DISABLE_METRICS
 from forge.types import ProcessConfig, ProvisionerConfig
-
 from monarch._src.actor.actor_mesh import ActorMesh
-
 from monarch.actor import (
     Actor,
     endpoint,
@@ -29,7 +25,6 @@ from monarch.actor import (
     shutdown_context,
     this_host,
 )
-
 from monarch.utils import setup_env_for_distributed
 
 logger = logging.getLogger(__name__)
@@ -200,8 +195,10 @@ class Provisioner:
     def __init__(self, cfg: ProvisionerConfig | None = None):
         self._lock = asyncio.Lock()
 
+        # _job will be None if local job
         self._job: JobTrait | None = None
         # _job_state contains all the HostMeshes that were allocated as attributes, accessible by their name
+        # _job_state will be None if local job
         self._job_state: JobState | None = None
 
         # HostMeshes are currently not hashable, so
@@ -239,11 +236,13 @@ class Provisioner:
             ),
         }
         self._proc_host_map = {}
+        # launcher represents a remote scheduler such as Slurm
+        # will be None if local job
         self.launcher: BaseLauncher | None = get_launcher(
             cfg.launcher_config if cfg is not None else None
         )
         if not self.launcher:
-            logger.warning("Launcher not provided, allocations must run locally.")
+            logger.warning("Launcher not provided, allocations will run locally.")
 
         self._registered_actors: list["ForgeActor"] = []
         self._registered_services: list["ServiceInterface"] = []
@@ -264,11 +263,8 @@ class Provisioner:
         """
         # no need to lock here because this is already locked behind `get_proc_mesh`
         if not self.launcher:
-            raise RuntimeError(
-                "You tried to create a remote allocation by specifying the number of hosts on an actor or service, "
-                "but no launcher was specified."
-            )
-        logger.debug(f"Creating remote host mesh for {name}")
+            # for local jobs, return the local host
+            return this_host()
 
         # Strip replica suffix (e.g., "generator_0" -> "generator")
         # Services append _{replica_idx} to mesh names

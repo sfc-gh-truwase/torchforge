@@ -11,16 +11,8 @@ import atexit
 import logging
 
 from .base import BaseLauncher
-# from .launcher import get_meshes_from_config
-
 from forge.types import LauncherConfig
-
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch.actor import ProcMesh
-# from monarch.tools import commands
-# from monarch.tools.config import Config
-
 
 from monarch.job import JobState, JobTrait, SlurmJob
 
@@ -75,11 +67,6 @@ class Slurmlauncher(BaseLauncher):
         Returns:
             A tuple of (job, job_state) containing the SlurmJob handle and its state.
         """
-        # HostMesh currently requires explicit configuration
-        # of the underlying transport from client to mesh.
-        # This can be removed in the future once this has been removed.
-        configure(default_transport=ChannelTransport.TcpWithHostname)
-
         # Collect all mesh requirements from config
         meshes = get_meshes_from_config(self.cfg)
 
