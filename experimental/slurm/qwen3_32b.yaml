@@ -13,10 +13,12 @@ compile: true # Enable torch.compile for trainer/ref_model, and CUDA graphs for 
 
 provisioner:
   launcher: slurm
-  memMB: 2047962
-  cpu: 192
-  account: agentic-models
-  qos: h200_capabilities_shared
+  slurm_args:
+    account: agentic-models
+    qos: h200_capabilities_shared
+  mem: 2047962M
+  cpus_per_task: 192
+  job_name: qwen3_32b
 
 # Main loop configuration
 rollout_threads: 32 # make this 4x the number of policy replicas seems to work well
@@ -39,8 +41,8 @@ dataset:
   streaming: true
   model: ${model}
 
-# Policy configuration
-policy:
+# Generator configuration
+generator:
   engine_args:  # https://docs.vllm.ai/en/v0.10.0/api/vllm/engine/arg_utils.html#vllm.engine.arg_utils.EngineArgs
     model: ${model}
     tensor_parallel_size: 4
@@ -125,12 +127,12 @@ ref_model:
 
 # All resource allocations
 services:
-  policy:
-    procs: ${policy.engine_args.tensor_parallel_size}
+  generator:
+    procs: ${generator.engine_args.tensor_parallel_size}
     num_replicas: 4
     hosts: 1
     with_gpus: true
-    mesh_name: policy
+    mesh_name: generator
   ref_model:
     procs: ${ref_model.parallelism.tensor_parallel_degree}
     num_replicas: 1

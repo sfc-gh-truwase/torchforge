@@ -6,6 +6,8 @@
 
 """SSHLauncher """
 
+# from .launcher import get_meshes_from_config
+import atexit
 import collections
 import os
 import re
@@ -18,9 +20,9 @@ from forge.types import LauncherConfig
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.job.job import SSHJob
-from monarch.actor import HostMesh
+from monarch.actor import HostMesh, ProcMesh
 
-from .base_launcher import BaseLauncher
+from .base import BaseLauncher
 
 
 def fetch_hostfile(hostfile_path):
@@ -66,10 +68,10 @@ def parse_hostfile(hostfile_lines):
     return resource_pool
 
 
-POLICY_KEY = "policy"
+GENERATOR_KEY = "generator"
 REFERENCE_KEY = "ref_model"
 TRAINER_KEY = "trainer"
-ProcMesh_KEYS = [POLICY_KEY, REFERENCE_KEY, TRAINER_KEY]
+ProcMesh_KEYS = [GENERATOR_KEY, REFERENCE_KEY, TRAINER_KEY]
 
 
 @dataclass
@@ -99,29 +101,63 @@ class SSHService:
         return host_mesh
 
 
+def get_meshes_from_config(cfg: LauncherConfig) -> dict[str, int]:
+    """Extract mesh requirements from launcher config.
+
+    Args:
+        cfg: The launcher configuration
+
+    Returns:
+        Dictionary mapping mesh names to number of hosts required
+    """
+    meshes: dict[str, int] = {}
+
+    # Add services that need remote hosts
+    for service_name, service_cfg in cfg.services.items():
+        hosts = getattr(service_cfg, "hosts", None)
+        if hosts and hosts > 0:
+            mesh_name = service_cfg.mesh_name or service_name
+            meshes[mesh_name] = hosts
+
+    # Add actors that need remote hosts
+    for actor_name, actor_cfg in cfg.actors.items():
+        hosts = getattr(actor_cfg, "hosts", None)
+        if hosts and hosts > 0:
+            mesh_name = actor_cfg.mesh_name or actor_name
+            meshes[mesh_name] = hosts
+
+    return meshes
+
+
 class SSHLauncher(BaseLauncher):
     def __init__(self, cfg: LauncherConfig):
+        self.cfg = cfg
         self.job = None
         self.state = None
         self.ssh_hostfile = cfg.ssh_hostfile
         self.host_pool = fetch_hostfile(self.ssh_hostfile)
         self.host_ips = list(self.host_pool.keys())
 
+        self.meshes = get_meshes_from_config(self.cfg)
+        print(f"sshlauncher: {self.meshes=}")
+
         self.forge_proc_map = self._create_forge_proc_map(cfg)
-        n_policy_slice_end = self.forge_proc_map[POLICY_KEY].num_hosts
+        n_generator_slice_end = self.forge_proc_map[GENERATOR_KEY].num_hosts
         n_trainer_slice_end = (
-            n_policy_slice_end + self.forge_proc_map[TRAINER_KEY].num_hosts
+            n_generator_slice_end + self.forge_proc_map[TRAINER_KEY].num_hosts
         )
         n_ref_model_slice_start = (
-            n_policy_slice_end if cfg.colocate_ref_and_trainer else n_trainer_slice_end
+            n_generator_slice_end
+            if cfg.colocate_ref_and_trainer
+            else n_trainer_slice_end
         )
         n_ref_model_slice_end = (
             n_ref_model_slice_start + self.forge_proc_map[REFERENCE_KEY].num_hosts
         )
 
         self.host_ip_map = {
-            POLICY_KEY: self.host_ips[:n_policy_slice_end],
-            TRAINER_KEY: self.host_ips[n_policy_slice_end:n_trainer_slice_end],
+            GENERATOR_KEY: self.host_ips[:n_generator_slice_end],
+            TRAINER_KEY: self.host_ips[n_generator_slice_end:n_trainer_slice_end],
             REFERENCE_KEY: self.host_ips[n_ref_model_slice_start:n_ref_model_slice_end],
         }
 
@@ -129,7 +165,7 @@ class SSHLauncher(BaseLauncher):
 
     def _create_forge_proc_map(self, cfg: LauncherConfig) -> dict:
         proc_map = {}
-        for key in ProcMesh_KEYS:
+        for key in ProcMesh_KEYS:  # self.meshes:
             if key in cfg.services:
                 proc_map[key] = SSHForgeProc(
                     is_actor=False, num_hosts=cfg.services[key].hosts
@@ -155,8 +191,10 @@ class SSHLauncher(BaseLauncher):
             ),  # make sure this is open
         )
 
+        # for proc_key in self.meshes:
         for proc_key in ProcMesh_KEYS:
-            job.add_mesh(f"{proc_key}_mesh", self.host_ip_map[proc_key])
+            # job.add_mesh(f"{proc_key}_mesh", self.host_ip_map[proc_key])
+            job.add_mesh(f"{proc_key}", self.host_ip_map[proc_key])
 
         return job
 
@@ -190,17 +228,30 @@ class SSHLauncher(BaseLauncher):
         self.state = self.job.state()
 
         self.host_mesh_map[TRAINER_KEY] = self._create_actor_or_service(
-            mesh_name=TRAINER_KEY, job_host_mesh=self.state.trainer_mesh
+            mesh_name=TRAINER_KEY,
+            job_host_mesh=self.state.trainer,
+            # job_host_mesh=self.state.trainer_mesh,
         )
-        self.host_mesh_map[POLICY_KEY] = self._create_actor_or_service(
-            mesh_name=POLICY_KEY, job_host_mesh=self.state.policy_mesh
+        self.host_mesh_map[GENERATOR_KEY] = self._create_actor_or_service(
+            mesh_name=GENERATOR_KEY,
+            job_host_mesh=self.state.generator,
+            # job_host_mesh=self.state.generator_mesh,
         )
         self.host_mesh_map[REFERENCE_KEY] = self._create_actor_or_service(
-            mesh_name=REFERENCE_KEY, job_host_mesh=self.state.ref_model_mesh
+            mesh_name=REFERENCE_KEY,
+            job_host_mesh=self.state.ref_model,
+            # job_host_mesh=self.state.ref_model_mesh,
         )
+
+        # Register cleanup handler
+        atexit.register(self.job.kill)
 
         print(f"ssh_launcher[init]: {self.ssh_hostfile=} {self.host_ips=}")
         print(f"ssh_launcher[init]: {self.host_ip_map=}")
+        return self.job, self.state
+
+    async def remote_setup(self, procs: ProcMesh) -> None:
+        return
 
     @classmethod
     def validate_configuration(cls, cfg: LauncherConfig) -> tuple[bool, str]:

@@ -3,10 +3,9 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-from .base import BaseLauncher
-from .launcher import get_launcher
 
-__all__ = [
-    "BaseLauncher",
-    "get_launcher",
-]
+"""Generator v0 package - Original vLLM integration (vLLM == 0.10.0)."""
+
+from forge.actors.vllm.v0.generator import Generator
+
+__all__ = ["Generator"]
