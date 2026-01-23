@@ -16,8 +16,6 @@ from dataclasses import dataclass, field
 from typing import List
 
 from forge.types import LauncherConfig
-from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.job.job import SSHJob
 from monarch.actor import HostMesh, ProcMesh
 
@@ -196,11 +194,6 @@ class SSHLauncher(BaseLauncher):
         )
 
     async def initialize(self) -> None:
-        # HostMesh currently requires explicit configuration
-        # of the underlying transport from client to mesh.
-        # This can be removed in the future once this has been removed.
-        configure(default_transport=ChannelTransport.TcpWithHostname)
-
         self.job = await self._setup_job()
         self.state = self.job.state()
 
