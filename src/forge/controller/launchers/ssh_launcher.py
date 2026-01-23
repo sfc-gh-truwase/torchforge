@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""SSHLauncher """
+"""SSHLauncher"""
 
 # from .launcher import get_meshes_from_config
 import atexit
@@ -12,7 +12,6 @@ import collections
 import os
 import re
 import sys
-
 from dataclasses import dataclass, field
 from typing import List
 
@@ -68,15 +67,10 @@ def parse_hostfile(hostfile_lines):
     return resource_pool
 
 
-GENERATOR_KEY = "generator"
-REFERENCE_KEY = "ref_model"
-TRAINER_KEY = "trainer"
-ProcMesh_KEYS = [GENERATOR_KEY, REFERENCE_KEY, TRAINER_KEY]
-
-
 @dataclass
 class SSHForgeProc:
     is_actor: bool = True
+    is_colocate: bool = False
     num_hosts: int = 0
 
 
@@ -101,34 +95,6 @@ class SSHService:
         return host_mesh
 
 
-def get_meshes_from_config(cfg: LauncherConfig) -> dict[str, int]:
-    """Extract mesh requirements from launcher config.
-
-    Args:
-        cfg: The launcher configuration
-
-    Returns:
-        Dictionary mapping mesh names to number of hosts required
-    """
-    meshes: dict[str, int] = {}
-
-    # Add services that need remote hosts
-    for service_name, service_cfg in cfg.services.items():
-        hosts = getattr(service_cfg, "hosts", None)
-        if hosts and hosts > 0:
-            mesh_name = service_cfg.mesh_name or service_name
-            meshes[mesh_name] = hosts
-
-    # Add actors that need remote hosts
-    for actor_name, actor_cfg in cfg.actors.items():
-        hosts = getattr(actor_cfg, "hosts", None)
-        if hosts and hosts > 0:
-            mesh_name = actor_cfg.mesh_name or actor_name
-            meshes[mesh_name] = hosts
-
-    return meshes
-
-
 class SSHLauncher(BaseLauncher):
     def __init__(self, cfg: LauncherConfig):
         self.cfg = cfg
@@ -137,42 +103,57 @@ class SSHLauncher(BaseLauncher):
         self.ssh_hostfile = cfg.ssh_hostfile
         self.host_pool = fetch_hostfile(self.ssh_hostfile)
         self.host_ips = list(self.host_pool.keys())
+        self.monarch_port = cfg.monarch_port
 
-        self.meshes = get_meshes_from_config(self.cfg)
-        print(f"sshlauncher: {self.meshes=}")
-
+        self.proc_meshes = self.cfg.get_meshes()
+        self.colocate_procs = [p for p in self.cfg.colocate if p in self.proc_meshes]
         self.forge_proc_map = self._create_forge_proc_map(cfg)
-        n_generator_slice_end = self.forge_proc_map[GENERATOR_KEY].num_hosts
-        n_trainer_slice_end = (
-            n_generator_slice_end + self.forge_proc_map[TRAINER_KEY].num_hosts
-        )
-        n_ref_model_slice_start = (
-            n_generator_slice_end
-            if cfg.colocate_ref_and_trainer
-            else n_trainer_slice_end
-        )
-        n_ref_model_slice_end = (
-            n_ref_model_slice_start + self.forge_proc_map[REFERENCE_KEY].num_hosts
-        )
 
-        self.host_ip_map = {
-            GENERATOR_KEY: self.host_ips[:n_generator_slice_end],
-            TRAINER_KEY: self.host_ips[n_generator_slice_end:n_trainer_slice_end],
-            REFERENCE_KEY: self.host_ips[n_ref_model_slice_start:n_ref_model_slice_end],
-        }
+        required_host_count = sum(
+            [
+                proc.num_hosts
+                for proc in self.forge_proc_map.values()
+                if not proc.is_colocate
+            ]
+        )
+        colocated_host_count = 0
+        if len(self.colocate_procs) > 0:
+            colocated_host_count = max(
+                [
+                    proc.num_hosts
+                    for proc in self.forge_proc_map.values()
+                    if proc.is_colocate
+                ]
+            )
+            required_host_count += colocated_host_count
+
+        self.host_ip_map = {}
+        slice_start = 0
+        for key, proc in self.forge_proc_map.items():
+            if proc.is_colocate:
+                # colocated procs share the last block of hosts
+                self.host_ip_map[key] = self.host_ips[-colocated_host_count:]
+            else:
+                self.host_ip_map[key] = self.host_ips[slice_start : proc.num_hosts]
+                slice_start += proc.num_hosts
 
         self.host_mesh_map = dict()
 
     def _create_forge_proc_map(self, cfg: LauncherConfig) -> dict:
         proc_map = {}
-        for key in ProcMesh_KEYS:  # self.meshes:
+        for key in self.proc_meshes.keys():
+            is_colocate = key in self.colocate_procs
             if key in cfg.services:
                 proc_map[key] = SSHForgeProc(
-                    is_actor=False, num_hosts=cfg.services[key].hosts
+                    is_actor=False,
+                    is_colocate=is_colocate,
+                    num_hosts=cfg.services[key].hosts,
                 )
             else:
                 proc_map[key] = SSHForgeProc(
-                    is_actor=True, num_hosts=cfg.actors[key].hosts
+                    is_actor=True,
+                    is_colocate=is_colocate,
+                    num_hosts=cfg.actors[key].hosts,
                 )
 
         return proc_map
@@ -186,14 +167,10 @@ class SSHLauncher(BaseLauncher):
                 "-o",
                 "BatchMode=yes",
             ],
-            monarch_port=int(
-                os.getenv("MONARCH_PORT", "22222")
-            ),  # make sure this is open
+            monarch_port=self.monarch_port,  # make sure this is open
         )
 
-        # for proc_key in self.meshes:
-        for proc_key in ProcMesh_KEYS:
-            # job.add_mesh(f"{proc_key}_mesh", self.host_ip_map[proc_key])
+        for proc_key in self.proc_meshes.keys():
             job.add_mesh(f"{proc_key}", self.host_ip_map[proc_key])
 
         return job
@@ -227,21 +204,10 @@ class SSHLauncher(BaseLauncher):
         self.job = await self._setup_job()
         self.state = self.job.state()
 
-        self.host_mesh_map[TRAINER_KEY] = self._create_actor_or_service(
-            mesh_name=TRAINER_KEY,
-            job_host_mesh=self.state.trainer,
-            # job_host_mesh=self.state.trainer_mesh,
-        )
-        self.host_mesh_map[GENERATOR_KEY] = self._create_actor_or_service(
-            mesh_name=GENERATOR_KEY,
-            job_host_mesh=self.state.generator,
-            # job_host_mesh=self.state.generator_mesh,
-        )
-        self.host_mesh_map[REFERENCE_KEY] = self._create_actor_or_service(
-            mesh_name=REFERENCE_KEY,
-            job_host_mesh=self.state.ref_model,
-            # job_host_mesh=self.state.ref_model_mesh,
-        )
+        for proc_key in self.forge_proc_map.keys():
+            self.host_mesh_map[proc_key] = self._create_actor_or_service(
+                mesh_name=proc_key, job_host_mesh=getattr(self.state, proc_key)
+            )
 
         # Register cleanup handler
         atexit.register(self.job.kill)
@@ -280,17 +246,25 @@ class SSHLauncher(BaseLauncher):
 
         # Check that sufficient hosts available
         available_host_count = len(fetch_hostfile(cfg.ssh_hostfile))
+        colocate_hosts = [
+            host for host in gpu_host_count.keys() if host in cfg.colocate
+        ]
         required_host_count = sum(list(gpu_host_count.values()))
-
-        if (
-            cfg.colocate_ref_and_trainer
-            and TRAINER_KEY in gpu_host_count
-            and REFERENCE_KEY in gpu_host_count
-        ):
-            excess_gpu_count = min(
-                gpu_host_count[TRAINER_KEY], gpu_host_count[REFERENCE_KEY]
+        required_host_count = sum(
+            [
+                count
+                for name, count in gpu_host_count.items()
+                if name not in cfg.colocate
+            ]
+        )
+        if len(colocate_hosts) > 0:
+            required_host_count += max(
+                [
+                    count
+                    for name, count in gpu_host_count.items()
+                    if name in cfg.colocate
+                ]
             )
-            required_host_count -= excess_gpu_count
 
         if required_host_count > available_host_count:
             error_msg = f"{error_msg_prefix} {required_host_count=} exceeds {available_host_count=}"

@@ -116,12 +116,37 @@ class LauncherConfig:
         None  # Memory per node (SLURM param, can get with sinfo)
     )
     ssh_hostfile: str = None
-    colocate_ref_and_trainer: bool = True
+    monarch_port: int = 22222
+    colocate: list[str] = field(default_factory=list)  # services and actors to colocate
     gpus_per_node: int = 8  # GPUs per node (SLURM param, can get with sinfo)
 
     def __post_init__(self):
         if isinstance(self.launcher, str):
             self.launcher = Launcher(self.launcher)
+
+    def get_meshes(self) -> dict[str, int]:
+        """Extract mesh requirements from launcher config.
+
+        Returns:
+            Dictionary mapping mesh names to number of hosts required
+        """
+        meshes: dict[str, int] = {}
+
+        # Add services that need remote hosts
+        for service_name, service_cfg in self.services.items():
+            hosts = getattr(service_cfg, "hosts", None)
+            if hosts and hosts > 0:
+                mesh_name = service_cfg.mesh_name or service_name
+                meshes[mesh_name] = hosts
+
+        # Add actors that need remote hosts
+        for actor_name, actor_cfg in self.actors.items():
+            hosts = getattr(actor_cfg, "hosts", None)
+            if hosts and hosts > 0:
+                mesh_name = actor_cfg.mesh_name or actor_name
+                meshes[mesh_name] = hosts
+
+        return meshes
 
 
 @dataclass
