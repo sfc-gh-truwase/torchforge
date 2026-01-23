@@ -16,10 +16,10 @@ rollout_threads: 1   # Recommended to set equal to generator.num_replicas
 
 # Observability configuration
 metric_logging:
-  # wandb:
-  #   project: grpo-training
-  #   group: grpo_exp_${oc.env:USER}
-  #   logging_mode: global_reduce # global_reduce, per_rank_reduce, per_rank_no_reduce
+  wandb:
+    project: grpo-training
+    group: grpo_exp_${oc.env:USER}
+    logging_mode: global_reduce # global_reduce, per_rank_reduce, per_rank_no_reduce
   console:
     logging_mode: global_reduce
 
@@ -37,7 +37,7 @@ generator:
     model: ${model}
     tensor_parallel_size: 1
     pipeline_parallel_size: 1
-    enforce_eager: true # ${not:${compile}}
+    enforce_eager: ${not:${compile}}
   sampling_params:  # https://docs.vllm.ai/en/v0.10.0/api/vllm/sampling_params.html#vllm.sampling_params.SamplingParams
     n: ${group_size}
     max_tokens: ${max_res_tokens}
@@ -60,7 +60,7 @@ trainer:
     local_batch_size: ${local_batch_size}
     seq_len: ${sum:${max_req_tokens},${max_res_tokens}}  # seq_len >= max_req_tokens + max_res_tokens
     max_norm: 1.0
-    steps: 10
+    steps: 1000000
     dtype: bfloat16
     gc_freq: 1
   compile:
@@ -75,7 +75,7 @@ trainer:
     disable_loss_parallel: true
   checkpoint:
     enable: true
-    folder: /data-fast/torchforge/${trainer.model.flavor}
+    folder: ./checkpoint              # The folder to save checkpoints to.
     initial_load_path: hf://${model}  # The path to load the initial checkpoint from. Ignored if `folder` exists.
     initial_load_in_hf: true          # If true, interpret initial_load_path as a HuggingFace model repo
     last_save_in_hf: true
@@ -111,7 +111,7 @@ ref_model:
     context_parallel_degree: 1
     expert_parallel_degree: 1
   checkpoint:
-    # enable: true
+    enable: true
     initial_load_path: hf://${model}
     initial_load_in_hf: true
 
