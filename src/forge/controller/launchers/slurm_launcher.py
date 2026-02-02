@@ -48,7 +48,7 @@ class Slurmlauncher(BaseLauncher):
         # Create a single SlurmJob with all meshes
         logger.info(f"Creating SlurmJob with meshes: {meshes}")
         job = SlurmJob(
-            meshes=meshes,  # e.g., {"generator": 1, "trainer": 2, "ref_model": 1}
+            meshes=meshes,  # e.g., {"generator_0": 1, "generator_1": 1, "trainer": 2}
             slurm_args=slurm_args,
             job_name=self.cfg.job_name + "_workers" or "forge_job",
             time_limit="72:00:00",  # Default to 72 hours
